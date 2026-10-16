@@ -29,5 +29,6 @@ Al entrar se pide la clave del panel (queda recordada 30 días en ese navegador)
 
 ## Cambios
 
+- **v1.2 (2026-10-16)** — Diagnóstico lee solo la primera página de cada smartie (límite de 50 consultas del plan gratuito de Cloudflare); se piden páginas de hasta 1000 filas.
 - **v1.1 (2026-10-16)** — El panel pide la clave en una pantalla de ingreso en vez de ponerla en la dirección.
 - **v1.0 (2026-10-16)** — Primera versión: lectura de smarties ARS/USD, cálculo de IVA, envío a Zentor por MCP, panel con configuración y diagnóstico. Envío desactivado hasta validar el formato con el diagnóstico.

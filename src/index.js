@@ -111,14 +111,15 @@ async function yiqiLogin(env) {
   return j.access_token;
 }
 
-async function yiqiSmartie(env, token, smartieId) {
+async function yiqiSmartie(env, token, smartieId, maxPaginas = MAX_PAGINAS) {
   const filas = [];
-  let columnas = null, total = null;
-  for (let page = 1; page <= MAX_PAGINAS; page++) {
+  let columnas = null, total = null, filasPorPagina = null, paginas = 0;
+  for (let page = 1; page <= maxPaginas; page++) {
     const u = new URL(`${YIQI_BASE}/api/public/PRECIO_ARTICULO_COMP/smartie`);
     u.searchParams.set("smartieId", smartieId);
     u.searchParams.set("schemaId", env.YIQI_SCHEMA_ID);
     u.searchParams.set("page", String(page));
+    u.searchParams.set("pageSize", "1000");
     const r = await fetch(u, { headers: { authorization: `Bearer ${token}`, accept: "application/json" } });
     const txt = await r.text();
     if (!r.ok) throw new Error(`YiQi smartie ${smartieId} página ${page} (HTTP ${r.status}): ${txt.slice(0, 300)}`);
@@ -126,10 +127,12 @@ async function yiqiSmartie(env, token, smartieId) {
     if (!columnas) columnas = j.columns || [];
     if (total === null) total = j.total ?? null;
     const data = j.data || [];
+    if (filasPorPagina === null) filasPorPagina = data.length;
+    paginas++;
     filas.push(...data);
     if (!data.length || (total !== null && filas.length >= total)) break;
   }
-  return { filas, columnas: columnas || [], total };
+  return { filas, columnas: columnas || [], total, filasPorPagina, paginas };
 }
 
 // Encuentra la clave de la fila que corresponde a una columna por su título visible.
@@ -147,9 +150,9 @@ function buscarClave(columnas, filas, titulos) {
   return null;
 }
 
-async function leerCostos(env, token, moneda) {
+async function leerCostos(env, token, moneda, maxPaginas) {
   const smartieId = moneda === "USD" ? env.SMARTIE_USD : env.SMARTIE_ARS;
-  const { filas, columnas, total } = await yiqiSmartie(env, token, smartieId);
+  const { filas, columnas, total, filasPorPagina, paginas } = await yiqiSmartie(env, token, smartieId, maxPaginas);
   const k = {
     sku: buscarClave(columnas, filas, ["Art. SKU", "SKU"]),
     nombre: buscarClave(columnas, filas, ["Artículo - Nombre", "Nombre"]),
@@ -171,7 +174,7 @@ async function leerCostos(env, token, moneda) {
     if (aviso) avisos.push(`${sku}: ${aviso}`);
     items.push({ sku, nombre: k.nombre ? String(f[k.nombre] ?? "") : "", costo: Math.round(costo * 100) / 100, iva, moneda });
   }
-  return { smartieId, total, filasLeidas: filas.length, columnasDetectadas: k, columnas, items, avisos, muestraCruda: filas.slice(0, 3) };
+  return { smartieId, total, filasPorPagina, paginas, filasLeidas: filas.length, columnasDetectadas: k, columnas, items, avisos, muestraCruda: filas.slice(0, 3) };
 }
 
 // ---------------------------------------------------------------- Zentor (MCP)
@@ -332,9 +335,11 @@ async function paginaDiagnostico(env) {
     const token = await yiqiLogin(env);
     bloques.push(`<div class="card"><h2 class="ok">YiQi: conexión correcta</h2></div>`);
     for (const moneda of ["ARS", "USD"]) {
-      const c = await leerCostos(env, token, moneda);
+      const c = await leerCostos(env, token, moneda, 1);
+      const pagNec = c.total && c.filasPorPagina ? Math.ceil(c.total / c.filasPorPagina) : "?";
       bloques.push(`<div class="card"><h2>Smartie ${esc(c.smartieId)} (${moneda})</h2>
-<p>Filas leídas: <b>${c.filasLeidas}</b> (total informado: ${esc(c.total)}) · Artículos válidos: <b>${c.items.length}</b> · Avisos: ${c.avisos.length}</p>
+<p>Total de filas en el smartie: <b>${esc(c.total)}</b> · Filas por página: <b>${esc(c.filasPorPagina)}</b> · Páginas necesarias: <b>${esc(pagNec)}</b></p>
+<p class="mut">(El diagnóstico lee solo la primera página.) Válidos en esta página: ${c.items.length} · Avisos: ${c.avisos.length}</p>
 <p class="mut">Columnas detectadas: ${esc(JSON.stringify(c.columnasDetectadas))}</p>
 <table><tr><th>SKU</th><th>Nombre</th><th>Costo</th><th>IVA %</th></tr>
 ${c.items.slice(0, 8).map((i) => `<tr><td>${esc(i.sku)}</td><td>${esc(i.nombre)}</td><td>${i.costo}</td><td>${i.iva ?? "-"}</td></tr>`).join("")}</table>
