@@ -20,7 +20,7 @@ Programa que corre en Cloudflare y envía los costos de compra de YiQi a Zentor.
 
 ## Páginas del panel
 
-Todas se abren agregando `?clave=TU_CLAVE` al final de la dirección.
+Al entrar se pide la clave del panel (queda recordada 30 días en ese navegador).
 
 - `/` — panel y estado de la configuración
 - `/configurar-zentor` — crea la credencial de Zentor con tu email y contraseña (no se guardan)
@@ -29,4 +29,5 @@ Todas se abren agregando `?clave=TU_CLAVE` al final de la dirección.
 
 ## Cambios
 
+- **v1.1 (2026-10-16)** — El panel pide la clave en una pantalla de ingreso en vez de ponerla en la dirección.
 - **v1.0 (2026-10-16)** — Primera versión: lectura de smarties ARS/USD, cálculo de IVA, envío a Zentor por MCP, panel con configuración y diagnóstico. Envío desactivado hasta validar el formato con el diagnóstico.

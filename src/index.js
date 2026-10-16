@@ -66,13 +66,33 @@ table{border-collapse:collapse;width:100%;font-size:13px}td,th{border-bottom:1px
   );
 }
 
-function claveOk(env, url) {
-  const dada = url.searchParams.get("clave") || "";
-  const real = env.CLAVE_PANEL || "";
-  if (!real || dada.length !== real.length) return false;
+function iguales(a, b) {
+  if (!a || a.length !== b.length) return false;
   let r = 0;
-  for (let i = 0; i < real.length; i++) r |= real.charCodeAt(i) ^ dada.charCodeAt(i);
+  for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return r === 0;
+}
+
+async function hashClave(clave) {
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("dentalab-panel:" + String(clave).trim()));
+  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function sesionOk(env, request, url) {
+  const real = String(env.CLAVE_PANEL || "").trim();
+  if (!real) return false;
+  const dada = (url.searchParams.get("clave") || "").trim();
+  if (dada && iguales(real, dada)) return true;
+  const cookie = (request.headers.get("cookie") || "").match(/(?:^|;\s*)panel=([a-f0-9]{64})/);
+  return !!cookie && iguales(await hashClave(real), cookie[1]);
+}
+
+function paginaEntrar(error = "") {
+  return html("Entrar", `<h1>Panel YiQi → Zentor</h1>
+${error}
+<form class="card" method="post" action="/entrar">
+<label>Clave del panel</label><input name="clave" type="password" required autofocus>
+<button type="submit">Entrar</button></form>`, error ? 401 : 200);
 }
 
 // ---------------------------------------------------------------- YiQi
@@ -264,12 +284,11 @@ async function sincronizar(env, { enviar }) {
 // ---------------------------------------------------------------- páginas
 
 function paginaConfigurar(url, mensaje = "") {
-  const clave = esc(url.searchParams.get("clave") || "");
-  return html("Conectar Zentor", `
+    return html("Conectar Zentor", `
 <h1>Conectar con Zentor</h1>
 <p class="mut">Esto crea una credencial de integración en tu cuenta de Zentor (tipo MCP, con permisos para consultar y cargar costos). Tu email y contraseña se usan solo para esta operación y no se guardan.</p>
 ${mensaje}
-<form class="card" method="post" action="/configurar-zentor?clave=${clave}">
+<form class="card" method="post" action="/configurar-zentor">
 <label>Email de Zentor (usuario administrador)</label><input name="email" type="email" required autocomplete="username">
 <label>Contraseña de Zentor</label><input name="password" type="password" required autocomplete="current-password">
 <button type="submit">Crear credencial</button>
@@ -294,7 +313,6 @@ async function crearCredencialZentor(email, password) {
 }
 
 function paginaPanel(url, env) {
-  const clave = encodeURIComponent(url.searchParams.get("clave") || "");
   const tiene = (k) => (env[k] ? '<span class="ok">cargado</span>' : '<span class="bad">falta</span>');
   return html("Panel YiQi → Zentor", `
 <h1>YiQi → Zentor</h1>
@@ -303,9 +321,9 @@ function paginaPanel(url, env) {
 <table><tr><td>YIQI_USUARIO / YIQI_CLAVE</td><td>${tiene("YIQI_USUARIO")} / ${tiene("YIQI_CLAVE")}</td></tr>
 <tr><td>ZENTOR_CLIENT_ID / ZENTOR_CLIENT_SECRET</td><td>${tiene("ZENTOR_CLIENT_ID")} / ${tiene("ZENTOR_CLIENT_SECRET")}</td></tr></table></div>
 <div class="card"><h2>Acciones</h2>
-<a class="btn" href="/configurar-zentor?clave=${clave}">1. Conectar Zentor</a>
-<a class="btn" href="/diagnostico?clave=${clave}">2. Diagnóstico</a>
-<a class="btn" href="/sincronizar?clave=${clave}">3. Sincronizar ahora</a></div>`);
+<a class="btn" href="/configurar-zentor">1. Conectar Zentor</a>
+<a class="btn" href="/diagnostico">2. Diagnóstico</a>
+<a class="btn" href="/sincronizar">3. Sincronizar ahora</a></div>`);
 }
 
 async function paginaDiagnostico(env) {
@@ -352,8 +370,18 @@ ${c.avisos.length ? `<details><summary>Ver avisos</summary><pre>${esc(c.avisos.s
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (!env.CLAVE_PANEL) return html("Falta configurar", `<h1>Falta la clave del panel</h1><p>Cargá el secreto <code>CLAVE_PANEL</code> en Cloudflare y volvé a entrar con <code>?clave=TU_CLAVE</code> al final de la dirección.</p>`, 503);
-    if (!claveOk(env, url)) return html("Acceso restringido", `<h1>Acceso restringido</h1><p>Entrá con <code>?clave=TU_CLAVE</code> al final de la dirección.</p>`, 401);
+    if (!String(env.CLAVE_PANEL || "").trim())
+      return html("Falta configurar", `<h1>Falta la clave del panel</h1><p>Cargá el secreto <code>CLAVE_PANEL</code> en Cloudflare (Settings → Variables and Secrets, tipo Secret) y volvé a entrar.</p>`, 503);
+    if (url.pathname === "/entrar" && request.method === "POST") {
+      const f = await request.formData();
+      const dada = String(f.get("clave") || "").trim();
+      if (!iguales(String(env.CLAVE_PANEL).trim(), dada)) return paginaEntrar(`<div class="card bad">Clave incorrecta.</div>`);
+      return new Response(null, {
+        status: 303,
+        headers: { location: "/", "set-cookie": `panel=${await hashClave(dada)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000` },
+      });
+    }
+    if (!(await sesionOk(env, request, url))) return paginaEntrar();
 
     try {
       if (url.pathname === "/configurar-zentor") {
