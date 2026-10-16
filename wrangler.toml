@@ -1,0 +1,20 @@
+name = "zentor-yiqi"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+# Corre solo cada 3 horas (en hora UTC). Para cambiar la frecuencia, editá esta línea.
+[triggers]
+crons = ["7 */3 * * *"]
+
+[observability]
+enabled = true
+
+[vars]
+YIQI_SCHEMA_ID = "328"
+SMARTIE_ARS = "2379"
+SMARTIE_USD = "2380"
+# Mientras diga "no", el programa lee y prepara todo pero NO envía nada a Zentor.
+ENVIO_ACTIVO = "no"
+
+# Secretos (se cargan en Cloudflare, nunca acá):
+#   YIQI_USUARIO, YIQI_CLAVE, CLAVE_PANEL, ZENTOR_CLIENT_ID, ZENTOR_CLIENT_SECRET
