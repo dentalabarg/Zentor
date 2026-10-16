@@ -119,7 +119,7 @@ async function yiqiSmartie(env, token, smartieId, maxPaginas = MAX_PAGINAS) {
     u.searchParams.set("smartieId", smartieId);
     u.searchParams.set("schemaId", env.YIQI_SCHEMA_ID);
     u.searchParams.set("page", String(page));
-    u.searchParams.set("pageSize", "1000");
+    u.searchParams.set("pageSize", "500");
     const r = await fetch(u, { headers: { authorization: `Bearer ${token}`, accept: "application/json" } });
     const txt = await r.text();
     if (!r.ok) throw new Error(`YiQi smartie ${smartieId} página ${page} (HTTP ${r.status}): ${txt.slice(0, 300)}`);
