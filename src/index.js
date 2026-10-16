@@ -59,6 +59,7 @@ input{width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px
 button,.btn{display:inline-block;margin-top:14px;padding:10px 16px;border:0;border-radius:8px;background:var(--acc);color:#fff;font-size:15px;cursor:pointer;text-decoration:none}
 code,pre{font-family:ui-monospace,monospace;font-size:13px}
 pre{white-space:pre-wrap;word-break:break-all;background:var(--bg);padding:10px;border-radius:8px;max-height:420px;overflow:auto}
+pre.full{max-height:none}
 table{border-collapse:collapse;width:100%;font-size:13px}td,th{border-bottom:1px solid #8883;padding:4px 6px;text-align:left}
 .secret{font-size:16px;font-weight:700;user-select:all;background:var(--bg);padding:8px;border-radius:6px;display:block;word-break:break-all}
 </style></head><body><main>${cuerpo}</main></body></html>`,
@@ -174,7 +175,12 @@ async function leerCostos(env, token, moneda, maxPaginas) {
     if (aviso) avisos.push(`${sku}: ${aviso}`);
     items.push({ sku, nombre: k.nombre ? String(f[k.nombre] ?? "") : "", costo: Math.round(costo * 100) / 100, iva, moneda });
   }
-  return { smartieId, total, filasPorPagina, paginas, filasLeidas: filas.length, columnasDetectadas: k, columnas, items, avisos, muestraCruda: filas.slice(0, 3) };
+  const titulos = {};
+  for (const [n, key] of Object.entries(k)) {
+    const col = columnas.find((c) => Object.values(c || {}).includes(key));
+    titulos[n] = { clave: key, columna: col ? Object.values(col).filter((v) => typeof v === "string" && v !== key).join(" / ") : null };
+  }
+  return { titulos, smartieId, total, filasPorPagina, paginas, filasLeidas: filas.length, columnasDetectadas: k, columnas, items, avisos, muestraCruda: filas.slice(0, 3) };
 }
 
 // ---------------------------------------------------------------- Zentor (MCP)
@@ -340,7 +346,7 @@ async function paginaDiagnostico(env) {
       bloques.push(`<div class="card"><h2>Smartie ${esc(c.smartieId)} (${moneda})</h2>
 <p>Total de filas en el smartie: <b>${esc(c.total)}</b> · Filas por página: <b>${esc(c.filasPorPagina)}</b> · Páginas necesarias: <b>${esc(pagNec)}</b></p>
 <p class="mut">(El diagnóstico lee solo la primera página.) Válidos en esta página: ${c.items.length} · Avisos: ${c.avisos.length}</p>
-<p class="mut">Columnas detectadas: ${esc(JSON.stringify(c.columnasDetectadas))}</p>
+<p class="mut">Columnas usadas: ${Object.entries(c.titulos).map(([n, t]) => `<b>${esc(n)}</b> = ${esc(t.columna || "?")} <code>${esc(t.clave)}</code>`).join(" · ")}</p>
 <table><tr><th>SKU</th><th>Nombre</th><th>Costo</th><th>IVA %</th></tr>
 ${c.items.slice(0, 8).map((i) => `<tr><td>${esc(i.sku)}</td><td>${esc(i.nombre)}</td><td>${i.costo}</td><td>${i.iva ?? "-"}</td></tr>`).join("")}</table>
 ${c.avisos.length ? `<details><summary>Ver avisos</summary><pre>${esc(c.avisos.slice(0, 100).join("\n"))}</pre></details>` : ""}
@@ -362,7 +368,7 @@ ${c.avisos.length ? `<details><summary>Ver avisos</summary><pre>${esc(c.avisos.s
     }
     bloques.push(`<div class="card"><h2 class="ok">Zentor: conexión correcta</h2>
 <p>Herramientas habilitadas: ${esc(lista.map((t) => t.name).join(", "))}</p>
-<h2>Formato de carga de costos</h2><pre>${esc(JSON.stringify(carga || "NO DISPONIBLE: falta el permiso products:massive:load-costs", null, 2))}</pre>
+<h2>Formato de carga de costos</h2><pre class="full">${esc(JSON.stringify(carga || "NO DISPONIBLE: falta el permiso products:massive:load-costs", null, 2))}</pre>
 <h2>Costos actuales en Zentor (muestra)</h2><pre>${esc(muestra)}</pre></div>`);
   } catch (e) {
     bloques.push(`<div class="card"><h2 class="bad">Zentor: error</h2><pre>${esc(e.message)}</pre></div>`);
