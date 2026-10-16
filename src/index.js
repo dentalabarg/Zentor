@@ -7,6 +7,8 @@ const ZENTOR_API = "https://api.zentor.io/api";
 const ZENTOR_MCP = "https://api.zentor.io/api/mcp";
 const MAX_PAGINAS = 300;
 const LOTE_ZENTOR = 500;
+const COSTO_MIN_USD = 1;
+const COSTO_MIN_ARS = 100;
 
 // ---------------------------------------------------------------- utilidades
 
@@ -163,24 +165,28 @@ async function leerCostos(env, token, moneda, maxPaginas) {
   const avisos = [];
   for (const [n, v] of Object.entries(k)) if (!v && n !== "nombre") avisos.push(`No encontré la columna "${n}" en el smartie ${smartieId}`);
   const items = [], vistos = new Set();
+  const excluidos = { discontinuados: 0 };
   for (const f of filas) {
     const sku = String(f[k.sku] ?? "").trim();
     if (!sku) continue;
     const costo = parseNum(f[k.neto]);
     const final = parseNum(f[k.final]);
+    const nombre = k.nombre ? String(f[k.nombre] ?? "") : "";
+    if (norm(nombre).includes("discontinuado")) { excluidos.discontinuados++; continue; }
     if (!(costo > 0)) { avisos.push(`${sku}: costo vacío o 0, no se envía`); continue; }
+    if (costo < (moneda === "USD" ? COSTO_MIN_USD : COSTO_MIN_ARS)) { avisos.push(`${sku}: costo ${costo} demasiado bajo, no se envía`); continue; }
     if (vistos.has(sku)) { avisos.push(`${sku}: SKU repetido, se usa el primero`); continue; }
     vistos.add(sku);
     const { iva, aviso } = calcularIva(costo, final);
     if (aviso) avisos.push(`${sku}: ${aviso}`);
-    items.push({ sku, nombre: k.nombre ? String(f[k.nombre] ?? "") : "", costo: Math.round(costo * 100) / 100, iva, moneda });
+    items.push({ sku, nombre, costo: Math.round(costo * 100) / 100, iva, moneda });
   }
   const titulos = {};
   for (const [n, key] of Object.entries(k)) {
     const col = columnas.find((c) => Object.values(c || {}).includes(key));
     titulos[n] = { clave: key, columna: col ? Object.values(col).filter((v) => typeof v === "string" && v !== key).join(" / ") : null };
   }
-  return { titulos, smartieId, total, filasPorPagina, paginas, filasLeidas: filas.length, columnasDetectadas: k, columnas, items, avisos, muestraCruda: filas.slice(0, 3) };
+  return { excluidos, titulos, smartieId, total, filasPorPagina, paginas, filasLeidas: filas.length, columnasDetectadas: k, columnas, items, avisos, muestraCruda: filas.slice(0, 3) };
 }
 
 // ---------------------------------------------------------------- Zentor (MCP)
@@ -232,35 +238,19 @@ async function zentorTool(env, name, args) {
   return datos;
 }
 
-// Arma los argumentos de load_costs_config según el esquema que publica Zentor.
-// Se ajusta una vez visto el esquema real en /diagnostico.
-function armarArgsCarga(schema, items, moneda) {
-  const props = schema?.properties || {};
-  const arrKey = Object.keys(props).find((k) => props[k]?.type === "array") || "items";
-  const itemProps = props[arrKey]?.items?.properties || {};
-  const pick = (re) => Object.keys(itemProps).find((k) => re.test(k));
-  const kSku = pick(/sku/i) || "sku";
-  const kCosto = pick(/cost|costo/i) || "cost";
-  const kIva = pick(/iva|vat|tax/i);
-  const kMonItem = pick(/currency|moneda/i);
-  const kMonTop = Object.keys(props).find((k) => /currency|moneda/i.test(k));
-  const args = {
-    [arrKey]: items.map((it) => {
-      const o = { [kSku]: it.sku, [kCosto]: it.costo };
-      if (kIva && it.iva != null) o[kIva] = it.iva;
-      if (kMonItem) o[kMonItem] = moneda;
-      return o;
-    }),
+// Formato de load_costs_config: { currency, costsData: [{ sku, cost, iva }] }
+function armarArgsCarga(items, moneda) {
+  return {
+    currency: moneda,
+    costsData: items.map((it) => (it.iva != null ? { sku: it.sku, cost: it.costo, iva: it.iva } : { sku: it.sku, cost: it.costo })),
   };
-  if (kMonTop) args[kMonTop] = moneda;
-  return args;
 }
 
-async function cargarEnZentor(env, items, moneda, schema) {
+async function cargarEnZentor(env, items, moneda) {
   const resultados = [];
   for (let i = 0; i < items.length; i += LOTE_ZENTOR) {
     const lote = items.slice(i, i + LOTE_ZENTOR);
-    const r = await zentorTool(env, "load_costs_config", armarArgsCarga(schema, lote, moneda));
+    const r = await zentorTool(env, "load_costs_config", armarArgsCarga(lote, moneda));
     resultados.push({ desde: i + 1, hasta: i + lote.length, respuesta: r });
   }
   return resultados;
@@ -268,25 +258,31 @@ async function cargarEnZentor(env, items, moneda, schema) {
 
 // ---------------------------------------------------------------- sincronización
 
+async function prepararCargas(env, token, maxPaginas) {
+  const usd = await leerCostos(env, token, "USD", maxPaginas);
+  const ars = await leerCostos(env, token, "ARS", maxPaginas);
+  const skusUsd = new Set(usd.items.map((i) => i.sku));
+  const enAmbas = ars.items.filter((i) => skusUsd.has(i.sku));
+  ars.items = ars.items.filter((i) => !skusUsd.has(i.sku));
+  return { USD: usd, ARS: ars, enAmbas };
+}
+
+
 async function sincronizar(env, { enviar }) {
   const inicio = Date.now();
   const informe = { fecha: new Date().toISOString(), envio: enviar ? "activo" : "solo prueba (no se envió nada)", monedas: {} };
   const token = await yiqiLogin(env);
-  let schema = null;
-  if (enviar) {
-    await mcpInit(env);
-    const tools = await mcpRpc(env, "tools/list", {});
-    schema = (tools.tools || []).find((t) => t.name === "load_costs_config")?.inputSchema;
-    if (!schema) throw new Error("Zentor no ofrece load_costs_config: revisá que la credencial tenga el permiso products:massive:load-costs.");
-  }
-  for (const moneda of ["ARS", "USD"]) {
-    const c = await leerCostos(env, token, moneda);
-    const r = { smartie: c.smartieId, filasLeidas: c.filasLeidas, articulosValidos: c.items.length, avisos: c.avisos.slice(0, 50), cantidadAvisos: c.avisos.length };
-    if (enviar && c.items.length) r.zentor = await cargarEnZentor(env, c.items, moneda, schema);
+  const cargas = await prepararCargas(env, token);
+  informe.enAmbasListas = cargas.enAmbas.length;
+  if (enviar) await mcpInit(env);
+  for (const moneda of ["USD", "ARS"]) {
+    const c = cargas[moneda];
+    const r = { smartie: c.smartieId, filasLeidas: c.filasLeidas, articulosEnviados: c.items.length, discontinuados: c.excluidos.discontinuados, avisos: c.avisos.slice(0, 50), cantidadAvisos: c.avisos.length };
+    if (enviar && c.items.length) r.zentor = await cargarEnZentor(env, c.items, moneda);
     informe.monedas[moneda] = r;
   }
   informe.segundos = Math.round((Date.now() - inicio) / 1000);
-  console.log(JSON.stringify({ resumen: { ...informe, monedas: Object.fromEntries(Object.entries(informe.monedas).map(([m, v]) => [m, { filas: v.filasLeidas, validos: v.articulosValidos, avisos: v.cantidadAvisos }])) } }));
+  console.log(JSON.stringify({ resumen: { ...informe, monedas: Object.fromEntries(Object.entries(informe.monedas).map(([m, v]) => [m, { filas: v.filasLeidas, enviados: v.articulosEnviados, avisos: v.cantidadAvisos }])) } }));
   return informe;
 }
 
@@ -332,7 +328,8 @@ function paginaPanel(url, env) {
 <div class="card"><h2>Acciones</h2>
 <a class="btn" href="/configurar-zentor">1. Conectar Zentor</a>
 <a class="btn" href="/diagnostico">2. Diagnóstico</a>
-<a class="btn" href="/sincronizar">3. Sincronizar ahora</a></div>`);
+<a class="btn" href="/probar-sku">3. Probar con un SKU</a>
+<a class="btn" href="/sincronizar">4. Sincronizar ahora</a></div>`);
 }
 
 async function paginaDiagnostico(env) {
@@ -340,17 +337,17 @@ async function paginaDiagnostico(env) {
   try {
     const token = await yiqiLogin(env);
     bloques.push(`<div class="card"><h2 class="ok">YiQi: conexión correcta</h2></div>`);
+    const cargas = await prepararCargas(env, token);
     for (const moneda of ["ARS", "USD"]) {
-      const c = await leerCostos(env, token, moneda, 1);
-      const pagNec = c.total && c.filasPorPagina ? Math.ceil(c.total / c.filasPorPagina) : "?";
+      const c = cargas[moneda];
       bloques.push(`<div class="card"><h2>Smartie ${esc(c.smartieId)} (${moneda})</h2>
-<p>Total de filas en el smartie: <b>${esc(c.total)}</b> · Filas por página: <b>${esc(c.filasPorPagina)}</b> · Páginas necesarias: <b>${esc(pagNec)}</b></p>
-<p class="mut">(El diagnóstico lee solo la primera página.) Válidos en esta página: ${c.items.length} · Avisos: ${c.avisos.length}</p>
+<p>Filas leídas: <b>${c.filasLeidas}</b> de ${esc(c.total)} · Se enviarían: <b>${c.items.length}</b> · Discontinuados excluidos: ${c.excluidos.discontinuados} · Avisos: ${c.avisos.length}${moneda === "ARS" ? ` · Quitados por estar también en USD: <b>${cargas.enAmbas.length}</b>` : ""}</p>
 <p class="mut">Columnas usadas: ${Object.entries(c.titulos).map(([n, t]) => `<b>${esc(n)}</b> = ${esc(t.columna || "?")} <code>${esc(t.clave)}</code>`).join(" · ")}</p>
 <table><tr><th>SKU</th><th>Nombre</th><th>Costo</th><th>IVA %</th></tr>
 ${c.items.slice(0, 8).map((i) => `<tr><td>${esc(i.sku)}</td><td>${esc(i.nombre)}</td><td>${i.costo}</td><td>${i.iva ?? "-"}</td></tr>`).join("")}</table>
-${c.avisos.length ? `<details><summary>Ver avisos</summary><pre>${esc(c.avisos.slice(0, 100).join("\n"))}</pre></details>` : ""}
-<details><summary>Datos crudos (primeras filas y columnas)</summary><pre>${esc(JSON.stringify({ columnas: c.columnas, filas: c.muestraCruda }, null, 2))}</pre></details></div>`);
+${c.avisos.length ? `<details><summary>Ver avisos</summary><pre>${esc(c.avisos.slice(0, 300).join("\n"))}</pre></details>` : ""}
+${moneda === "ARS" && cargas.enAmbas.length ? `<details><summary>SKU que están en ARS y en USD (se usa USD)</summary><pre>${esc(cargas.enAmbas.map((i) => `${i.sku}  ${i.nombre}  (ARS ${i.costo} / USD ${cargas.USD.items.find((u) => u.sku === i.sku)?.costo})`).join("\n"))}</pre></details>` : ""}
+</div>`);
     }
   } catch (e) {
     bloques.push(`<div class="card"><h2 class="bad">YiQi: error</h2><pre>${esc(e.message)}</pre></div>`);
@@ -374,6 +371,30 @@ ${c.avisos.length ? `<details><summary>Ver avisos</summary><pre>${esc(c.avisos.s
     bloques.push(`<div class="card"><h2 class="bad">Zentor: error</h2><pre>${esc(e.message)}</pre></div>`);
   }
   return html("Diagnóstico", `<h1>Diagnóstico</h1><p class="mut">Copiá esta página completa y pasásela a Claude para terminar de ajustar el envío.</p>${bloques.join("")}`);
+}
+
+async function paginaProbarSku(request, env) {
+  const form = `<form class="card" method="post" action="/probar-sku"><label>SKU a probar</label><input name="sku" required>
+<button type="submit">Enviar el costo de este SKU a Zentor</button></form>`;
+  if (request.method !== "POST")
+    return html("Probar un SKU", `<h1>Probar con un SKU</h1><p class="mut">Envía a Zentor el costo e IVA de un solo SKU, tal como lo haría la sincronización. Después revisá en Zentor que el margen mínimo de ese SKU siga igual.</p>${form}`);
+  const sku = String((await request.formData()).get("sku") || "").trim();
+  const token = await yiqiLogin(env);
+  const cargas = await prepararCargas(env, token);
+  let moneda = null, item = null;
+  for (const m of ["USD", "ARS"]) { const it = cargas[m].items.find((i) => i.sku === sku); if (it) { moneda = m; item = it; break; } }
+  if (!item) return html("Probar un SKU", `<h1>Probar con un SKU</h1><div class="card bad">El SKU <b>${esc(sku)}</b> no está entre los que se enviarían (no existe, está discontinuado o tiene un aviso).</div>${form}`);
+  await mcpInit(env);
+  let antes = null;
+  try { antes = await zentorTool(env, "get_sku_costs", { skus: [sku] }); } catch (e) { antes = "No se pudo leer: " + e.message; }
+  const args = armarArgsCarga([item], moneda);
+  const resp = await zentorTool(env, "load_costs_config", args);
+  return html("Probar un SKU", `<h1 class="ok">Enviado</h1>
+<div class="card"><p><b>${esc(item.sku)}</b> ${esc(item.nombre)}</p>
+<h2>Antes (según Zentor)</h2><pre class="full">${esc(JSON.stringify(antes, null, 2))}</pre>
+<h2>Lo que se envió</h2><pre class="full">${esc(JSON.stringify(args, null, 2))}</pre>
+<h2>Respuesta de Zentor</h2><pre class="full">${esc(JSON.stringify(resp, null, 2))}</pre></div>
+<p>Ahora abrí ese SKU en Zentor y fijate que el costo sea el nuevo y que el <b>margen mínimo</b> siga como estaba.</p>${form}`);
 }
 
 // ---------------------------------------------------------------- entrada
@@ -412,6 +433,7 @@ export default {
         return paginaConfigurar(url);
       }
       if (url.pathname === "/diagnostico") return await paginaDiagnostico(env);
+      if (url.pathname === "/probar-sku") return await paginaProbarSku(request, env);
       if (url.pathname === "/sincronizar") {
         const inf = await sincronizar(env, { enviar: env.ENVIO_ACTIVO === "si" });
         return html("Sincronización", `<h1>Sincronización</h1><div class="card"><pre>${esc(JSON.stringify(inf, null, 2))}</pre></div>`);
