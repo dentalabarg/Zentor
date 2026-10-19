@@ -6,7 +6,8 @@ const YIQI_BASE = "https://api.yiqi.com.ar";
 const ZENTOR_API = "https://api.zentor.io/api";
 const ZENTOR_MCP = "https://api.zentor.io/api/mcp";
 const MAX_PAGINAS = 300;
-const LOTE_ZENTOR = 500;
+const LOTE_ZENTOR = 2000;
+const ENTIDADES_BOM = ["BOM", "LISTA_DE_MATERIALES", "BOM_ARTICULO", "FORMULA", "RECETA", "KIT", "COMBO", "PRECIO_ARTICULO_COMP"];
 const COSTO_MIN_USD = 1;
 const COSTO_MIN_ARS = 100;
 
@@ -114,11 +115,11 @@ async function yiqiLogin(env) {
   return j.access_token;
 }
 
-async function yiqiSmartie(env, token, smartieId, maxPaginas = MAX_PAGINAS) {
+async function yiqiSmartie(env, token, smartieId, maxPaginas = MAX_PAGINAS, entidad = "PRECIO_ARTICULO_COMP") {
   const filas = [];
   let columnas = null, total = null, filasPorPagina = null, paginas = 0;
   for (let page = 1; page <= maxPaginas; page++) {
-    const u = new URL(`${YIQI_BASE}/api/public/PRECIO_ARTICULO_COMP/smartie`);
+    const u = new URL(`${YIQI_BASE}/api/public/${entidad}/smartie`);
     u.searchParams.set("smartieId", smartieId);
     u.searchParams.set("schemaId", env.YIQI_SCHEMA_ID);
     u.searchParams.set("page", String(page));
@@ -187,6 +188,40 @@ async function leerCostos(env, token, moneda, maxPaginas) {
     titulos[n] = { clave: key, columna: col ? Object.values(col).filter((v) => typeof v === "string" && v !== key).join(" / ") : null };
   }
   return { excluidos, titulos, smartieId, total, filasPorPagina, paginas, filasLeidas: filas.length, columnasDetectadas: k, columnas, items, avisos, muestraCruda: filas.slice(0, 3) };
+}
+
+async function leerBom(env, token) {
+  const smartieId = env.SMARTIE_BOM;
+  if (!smartieId) return null;
+  const candidatas = env.YIQI_ENTIDAD_BOM ? [env.YIQI_ENTIDAD_BOM] : ENTIDADES_BOM;
+  let res = null, entidad = null;
+  const errores = [];
+  for (const e of candidatas) {
+    try { res = await yiqiSmartie(env, token, smartieId, 5, e); entidad = e; break; }
+    catch (err) { errores.push(`${e}: ${err.message.slice(0, 120)}`); }
+  }
+  if (!res) throw new Error(`No pude leer el smartie de BOM ${smartieId}. Intentos:\n${errores.join("\n")}`);
+  const { filas, columnas, total } = res;
+  const k = {
+    sku: buscarClave(columnas, filas, ["Descripción", "Descripcion"]),
+    nombre: buscarClave(columnas, filas, ["Artículo resultante - Nombre"]),
+    costo: buscarClave(columnas, filas, ["Costo total"]),
+    fecha: buscarClave(columnas, filas, ["Fecha de creación"]),
+  };
+  const avisos = [];
+  for (const n of ["sku", "costo"]) if (!k[n]) avisos.push(`No encontré la columna "${n}" en el smartie de BOM ${smartieId}`);
+  const porSku = new Map();
+  for (const f of filas) {
+    const sku = String(f[k.sku] ?? "").trim();
+    const costo = parseNum(f[k.costo]);
+    if (!sku) continue;
+    if (!(costo > 0)) { avisos.push(`BOM ${sku}: costo vacío o 0`); continue; }
+    const fecha = k.fecha ? String(f[k.fecha] ?? "") : "";
+    const prev = porSku.get(sku);
+    if (prev) avisos.push(`BOM ${sku}: hay más de un BOM, se usa el más reciente`);
+    if (!prev || fecha > prev.fecha) porSku.set(sku, { sku, nombre: k.nombre ? String(f[k.nombre] ?? "") : "", costo: Math.round(costo * 100) / 100, fecha });
+  }
+  return { smartieId, entidad, total, filasLeidas: filas.length, columnasDetectadas: k, items: [...porSku.values()], avisos, muestraCruda: filas.slice(0, 2), columnas };
 }
 
 // ---------------------------------------------------------------- Zentor (MCP)
@@ -261,19 +296,34 @@ async function cargarEnZentor(env, items, moneda) {
 async function prepararCargas(env, token, maxPaginas) {
   const usd = await leerCostos(env, token, "USD", maxPaginas);
   const ars = await leerCostos(env, token, "ARS", maxPaginas);
+  let bom = null, errorBom = null;
+  try { bom = await leerBom(env, token); } catch (e) { errorBom = e.message; }
+  // BOM: el costo del combo (ARS, sin IVA) reemplaza al del smartie de precios.
+  const reemplazosBom = [];
+  if (bom) {
+    const ivaDe = new Map([...ars.items, ...usd.items].map((i) => [i.sku, i.iva]));
+    const skusBom = new Set(bom.items.map((b) => b.sku));
+    for (const lista of [usd, ars]) lista.items = lista.items.filter((i) => !skusBom.has(i.sku));
+    for (const b of bom.items) {
+      ars.items.push({ sku: b.sku, nombre: b.nombre, costo: b.costo, iva: ivaDe.get(b.sku) ?? null, moneda: "ARS", deBom: true });
+      reemplazosBom.push(b);
+    }
+  }
   const skusUsd = new Set(usd.items.map((i) => i.sku));
   const enAmbas = ars.items.filter((i) => skusUsd.has(i.sku));
   ars.items = ars.items.filter((i) => !skusUsd.has(i.sku));
-  return { USD: usd, ARS: ars, enAmbas };
+  return { USD: usd, ARS: ars, BOM: bom, errorBom, reemplazosBom, enAmbas };
 }
-
 
 async function sincronizar(env, { enviar }) {
   const inicio = Date.now();
   const informe = { fecha: new Date().toISOString(), envio: enviar ? "activo" : "solo prueba (no se envió nada)", monedas: {} };
   const token = await yiqiLogin(env);
   const cargas = await prepararCargas(env, token);
+  if (cargas.errorBom) throw new Error("No se envió nada: falló la lectura de los BOM (si se envía igual, los combos quedarían con el costo equivocado).\n" + cargas.errorBom);
   informe.enAmbasListas = cargas.enAmbas.length;
+  informe.combosBom = cargas.reemplazosBom.length;
+  if (cargas.BOM?.avisos.length) informe.avisosBom = cargas.BOM.avisos.slice(0, 30);
   if (enviar) await mcpInit(env);
   for (const moneda of ["USD", "ARS"]) {
     const c = cargas[moneda];
@@ -338,13 +388,24 @@ async function paginaDiagnostico(env) {
     const token = await yiqiLogin(env);
     bloques.push(`<div class="card"><h2 class="ok">YiQi: conexión correcta</h2></div>`);
     const cargas = await prepararCargas(env, token);
+    if (cargas.errorBom) bloques.push(`<div class="card"><h2 class="bad">BOM: error</h2><pre>${esc(cargas.errorBom)}</pre></div>`);
+    if (cargas.BOM) {
+      const b = cargas.BOM;
+      bloques.push(`<div class="card"><h2>Smartie ${esc(b.smartieId)} (BOM / combos, ARS)</h2>
+<p>Entidad detectada: <b>${esc(b.entidad)}</b> · Filas: <b>${b.filasLeidas}</b> de ${esc(b.total)} · Combos con costo: <b>${b.items.length}</b> · Avisos: ${b.avisos.length}</p>
+<p class="mut">Columnas usadas: ${esc(JSON.stringify(b.columnasDetectadas))}</p>
+<table><tr><th>SKU</th><th>Nombre</th><th>Costo BOM</th><th>IVA %</th></tr>
+${cargas.ARS.items.filter((i) => i.deBom).slice(0, 50).map((i) => `<tr><td>${esc(i.sku)}</td><td>${esc(i.nombre)}</td><td>${i.costo}</td><td>${i.iva ?? "(sin dato, no se envía)"}</td></tr>`).join("")}</table>
+${b.avisos.length ? `<details><summary>Ver avisos</summary><pre>${esc(b.avisos.join("\n"))}</pre></details>` : ""}
+<details><summary>Datos crudos</summary><pre>${esc(JSON.stringify({ columnas: b.columnas, filas: b.muestraCruda }, null, 2))}</pre></details></div>`);
+    }
     for (const moneda of ["ARS", "USD"]) {
       const c = cargas[moneda];
       bloques.push(`<div class="card"><h2>Smartie ${esc(c.smartieId)} (${moneda})</h2>
 <p>Filas leídas: <b>${c.filasLeidas}</b> de ${esc(c.total)} · Se enviarían: <b>${c.items.length}</b> · Discontinuados excluidos: ${c.excluidos.discontinuados} · Avisos: ${c.avisos.length}${moneda === "ARS" ? ` · Quitados por estar también en USD: <b>${cargas.enAmbas.length}</b>` : ""}</p>
 <p class="mut">Columnas usadas: ${Object.entries(c.titulos).map(([n, t]) => `<b>${esc(n)}</b> = ${esc(t.columna || "?")} <code>${esc(t.clave)}</code>`).join(" · ")}</p>
 <table><tr><th>SKU</th><th>Nombre</th><th>Costo</th><th>IVA %</th></tr>
-${c.items.slice(0, 8).map((i) => `<tr><td>${esc(i.sku)}</td><td>${esc(i.nombre)}</td><td>${i.costo}</td><td>${i.iva ?? "-"}</td></tr>`).join("")}</table>
+${c.items.filter((i) => !i.deBom).slice(0, 8).map((i) => `<tr><td>${esc(i.sku)}</td><td>${esc(i.nombre)}</td><td>${i.costo}</td><td>${i.iva ?? "-"}</td></tr>`).join("")}</table>
 ${c.avisos.length ? `<details><summary>Ver avisos</summary><pre>${esc(c.avisos.slice(0, 300).join("\n"))}</pre></details>` : ""}
 ${moneda === "ARS" && cargas.enAmbas.length ? `<details><summary>SKU que están en ARS y en USD (se usa USD)</summary><pre>${esc(cargas.enAmbas.map((i) => `${i.sku}  ${i.nombre}  (ARS ${i.costo} / USD ${cargas.USD.items.find((u) => u.sku === i.sku)?.costo})`).join("\n"))}</pre></details>` : ""}
 </div>`);

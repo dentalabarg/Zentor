@@ -13,6 +13,8 @@ enabled = true
 YIQI_SCHEMA_ID = "328"
 SMARTIE_ARS = "2379"
 SMARTIE_USD = "2380"
+# Costos de combos (BOM), en pesos sin IVA. Reemplazan al costo del smartie de precios.
+SMARTIE_BOM = "2293"
 # Mientras diga "no", el programa lee y prepara todo pero NO envía nada a Zentor.
 ENVIO_ACTIVO = "no"
 
