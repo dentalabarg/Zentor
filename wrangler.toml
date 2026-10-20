@@ -16,7 +16,7 @@ SMARTIE_USD = "2380"
 # Costos de combos (BOM), en pesos sin IVA. Reemplazan al costo del smartie de precios.
 SMARTIE_BOM = "2293"
 # Mientras diga "no", el programa lee y prepara todo pero NO envía nada a Zentor.
-ENVIO_ACTIVO = "no"
+ENVIO_ACTIVO = "si"
 
 # Secretos (se cargan en Cloudflare, nunca acá):
 #   YIQI_USUARIO, YIQI_CLAVE, CLAVE_PANEL, ZENTOR_CLIENT_ID, ZENTOR_CLIENT_SECRET
