@@ -312,7 +312,11 @@ async function prepararCargas(env, token, maxPaginas) {
   const skusUsd = new Set(usd.items.map((i) => i.sku));
   const enAmbas = ars.items.filter((i) => skusUsd.has(i.sku));
   ars.items = ars.items.filter((i) => !skusUsd.has(i.sku));
-  return { USD: usd, ARS: ars, BOM: bom, errorBom, reemplazosBom, enAmbas };
+  // SKU con costo manual en Zentor: no se envían.
+  const manuales = new Set(String(env.SKUS_COSTO_MANUAL || "").split(",").map((x) => x.trim()).filter(Boolean));
+  const excluidosManual = [];
+  for (const lista of [usd, ars]) lista.items = lista.items.filter((i) => (manuales.has(i.sku) ? (excluidosManual.push(i), false) : true));
+  return { USD: usd, ARS: ars, BOM: bom, errorBom, reemplazosBom, enAmbas, excluidosManual };
 }
 
 async function sincronizar(env, { enviar }) {
@@ -323,6 +327,7 @@ async function sincronizar(env, { enviar }) {
   if (cargas.errorBom) throw new Error("No se envió nada: falló la lectura de los BOM (si se envía igual, los combos quedarían con el costo equivocado).\n" + cargas.errorBom);
   informe.enAmbasListas = cargas.enAmbas.length;
   informe.combosBom = cargas.reemplazosBom.length;
+  informe.costoManualNoEnviados = cargas.excluidosManual.map((i) => i.sku);
   if (cargas.BOM?.avisos.length) informe.avisosBom = cargas.BOM.avisos.slice(0, 30);
   if (enviar) await mcpInit(env);
   for (const moneda of ["USD", "ARS"]) {

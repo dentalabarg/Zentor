@@ -15,6 +15,8 @@ SMARTIE_ARS = "2379"
 SMARTIE_USD = "2380"
 # Costos de combos (BOM), en pesos sin IVA. Reemplazan al costo del smartie de precios.
 SMARTIE_BOM = "2293"
+# SKU con costo cargado a mano en Zentor (costo real distinto al de YiQi). La sincronización NO los toca.
+SKUS_COSTO_MANUAL = "1080,1081,32744,35010,35087,61315,6528,6528-2,6528-3,6528-8,6528-F,6529,6529-2,6529-3,6529-8,6529-F,6530,6530-2,6530-3,6530-8,6530-F,6538,6538-2,6538-3,6538-8,6538-F,6552,6553,6554,6557,6552-2,6553-2,6554-2,6557-2,8804,21081,244-4,244-2,1007,32806"
 # Mientras diga "no", el programa lee y prepara todo pero NO envía nada a Zentor.
 ENVIO_ACTIVO = "si"
 
