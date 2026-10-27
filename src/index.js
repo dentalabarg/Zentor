@@ -312,10 +312,10 @@ async function prepararCargas(env, token, maxPaginas) {
   const skusUsd = new Set(usd.items.map((i) => i.sku));
   const enAmbas = ars.items.filter((i) => skusUsd.has(i.sku));
   ars.items = ars.items.filter((i) => !skusUsd.has(i.sku));
-  // SKU con costo manual en Zentor: no se envían.
+  // SKU con costo manual en Zentor: no se envían (salvo los BOM, que siempre toman el costo del BOM de YiQi).
   const manuales = new Set(String(env.SKUS_COSTO_MANUAL || "").split(",").map((x) => x.trim()).filter(Boolean));
   const excluidosManual = [];
-  for (const lista of [usd, ars]) lista.items = lista.items.filter((i) => (manuales.has(i.sku) ? (excluidosManual.push(i), false) : true));
+  for (const lista of [usd, ars]) lista.items = lista.items.filter((i) => (manuales.has(i.sku) && !i.deBom ? (excluidosManual.push(i), false) : true));
   return { USD: usd, ARS: ars, BOM: bom, errorBom, reemplazosBom, enAmbas, excluidosManual };
 }
 
