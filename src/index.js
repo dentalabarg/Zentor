@@ -379,7 +379,8 @@ function paginaPanel(url, env) {
 <a class="btn" href="/configurar-zentor">1. Conectar Zentor</a>
 <a class="btn" href="/diagnostico">2. Diagnóstico</a>
 <a class="btn" href="/probar-sku">3. Probar con un SKU</a>
-<a class="btn" href="/sincronizar">4. Sincronizar ahora</a></div>`);
+<a class="btn" href="/sincronizar">4. Sincronizar ahora</a>
+<a class="btn" href="/exportar-costos">5. Descargar costos (CSV)</a></div>`);
 }
 
 async function paginaDiagnostico(env) {
@@ -494,6 +495,17 @@ export default {
         return paginaConfigurar(url);
       }
       if (url.pathname === "/diagnostico") return await paginaDiagnostico(env);
+      if (url.pathname === "/exportar-costos") {
+        const token = await yiqiLogin(env);
+        const c = await prepararCargas(env, token);
+        const q = (v) => '"' + String(v ?? "").replace(/"/g, '""') + '"';
+        const lineas = ["sku;moneda;costo;iva;origen;nombre"];
+        for (const m of ["ARS", "USD"]) for (const i of c[m].items)
+          lineas.push([q(i.sku), m, String(i.costo).replace(".", ","), i.iva ?? "", i.deBom ? "BOM" : "Lista", q(i.nombre)].join(";"));
+        return new Response("\ufeff" + lineas.join("\r\n"), {
+          headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": 'attachment; filename="costos_yiqi.csv"', "cache-control": "no-store" },
+        });
+      }
       if (url.pathname === "/probar-sku") return await paginaProbarSku(request, env);
       if (url.pathname === "/sincronizar") {
         const inf = await sincronizar(env, { enviar: env.ENVIO_ACTIVO === "si" });
