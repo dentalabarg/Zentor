@@ -190,6 +190,35 @@ async function leerCostos(env, token, moneda, maxPaginas) {
   return { excluidos, titulos, smartieId, total, filasPorPagina, paginas, filasLeidas: filas.length, columnasDetectadas: k, columnas, items, avisos, muestraCruda: filas.slice(0, 3) };
 }
 
+async function leerSmartieDetectando(env, token, smartieId, candidatas, maxPaginas = 10) {
+  const errores = [];
+  for (const e of candidatas) {
+    try { const r = await yiqiSmartie(env, token, smartieId, maxPaginas, e); return { ...r, entidad: e }; }
+    catch (err) { errores.push(`${e}: ${err.message.slice(0, 100)}`); }
+  }
+  throw new Error(`No pude leer el smartie ${smartieId}. Intentos:\n${errores.join("\n")}`);
+}
+
+const ENTIDADES_PUBLICACIONES = ["PRECIO_ARTICULO", "PRECIO_ARTICULO_VENTA", "PUBLICACION", "PUBLICACION_ML", "ARTICULO_PUBLICACION", "MATERIAL", "ARTICULO", "PRECIO_ARTICULO_COMP"];
+
+async function leerPublicaciones(env, token) {
+  const id = env.SMARTIE_PUBLICACIONES;
+  if (!id) return null;
+  const cand = env.YIQI_ENTIDAD_PUBLICACIONES ? [env.YIQI_ENTIDAD_PUBLICACIONES] : ENTIDADES_PUBLICACIONES;
+  const { filas, columnas, entidad } = await leerSmartieDetectando(env, token, id, cand, 10);
+  const kSku = buscarClave(columnas, filas, ["Artículo - SKU", "Art. SKU", "SKU"]);
+  const kId = buscarClave(columnas, filas, ["Id", "ID", "Id publicación", "MLA"]);
+  const porSku = new Map();
+  for (const f of filas) {
+    const sku = String(f[kSku] ?? "").trim();
+    if (!sku) continue;
+    const pub = kId ? String(f[kId] ?? "").trim() : "";
+    if (!porSku.has(sku)) porSku.set(sku, new Set());
+    if (pub) porSku.get(sku).add(pub);
+  }
+  return { entidad, filas: filas.length, kSku, kId, porSku };
+}
+
 async function leerBom(env, token) {
   const smartieId = env.SMARTIE_BOM;
   if (!smartieId) return null;
@@ -503,10 +532,17 @@ export default {
       if (url.pathname === "/exportar-costos") {
         const token = await yiqiLogin(env);
         const c = await prepararCargas(env, token);
+        let pubs = null, errPubs = "";
+        try { pubs = await leerPublicaciones(env, token); } catch (e) { errPubs = e.message; }
+        if (!pubs) return html("Error", `<h1 class="bad">No pude leer las publicaciones (smartie ${esc(env.SMARTIE_PUBLICACIONES)})</h1><pre>${esc(errPubs)}</pre>`, 500);
         const q = (v) => '"' + String(v ?? "").replace(/"/g, '""') + '"';
-        const lineas = ["sku;moneda;costo;iva;origen;nombre"];
-        for (const m of ["ARS", "USD"]) for (const i of c[m].items)
-          lineas.push([q(i.sku), m, String(i.costo).replace(".", ","), i.iva ?? "", i.deBom ? "BOM" : "Lista", q(i.nombre)].join(";"));
+        const lineas = ["sku;moneda;costo;iva;origen;publicaciones;nombre"];
+        const fila = (i, m, origen) => {
+          const p = pubs.porSku.get(i.sku);
+          lineas.push([q(i.sku), m, String(i.costo).replace(".", ","), i.iva ?? "", origen, q(p ? [...p].join(" ") || "si" : ""), q(i.nombre)].join(";"));
+        };
+        for (const m of ["ARS", "USD"]) for (const i of c[m].items) fila(i, m, i.deBom ? "BOM" : "Lista");
+        for (const i of c.excluidosManual) fila(i, i.moneda, "Manual (costo YiQi)");
         return new Response("\ufeff" + lineas.join("\r\n"), {
           headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": 'attachment; filename="costos_yiqi.csv"', "cache-control": "no-store" },
         });
