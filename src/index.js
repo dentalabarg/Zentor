@@ -414,7 +414,8 @@ function paginaPanel(url, env) {
 <a class="btn" href="/diagnostico">2. Diagnóstico</a>
 <a class="btn" href="/probar-sku">3. Probar con un SKU</a>
 <a class="btn" href="/sincronizar">4. Sincronizar ahora</a>
-<a class="btn" href="/exportar-costos">5. Descargar costos (CSV)</a></div>`);
+<a class="btn" href="/exportar-costos">5. Descargar costos (CSV)</a>
+<a class="btn" href="/exportar-smartie?id=1763">6. Descargar artículos 1763 (CSV)</a></div>`);
 }
 
 async function paginaDiagnostico(env) {
@@ -545,6 +546,25 @@ export default {
         for (const i of c.excluidosManual) fila(i, i.moneda, "Manual (costo YiQi)");
         return new Response("\ufeff" + lineas.join("\r\n"), {
           headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": 'attachment; filename="costos_yiqi.csv"', "cache-control": "no-store" },
+        });
+      }
+      if (url.pathname === "/exportar-smartie") {
+        const id = (url.searchParams.get("id") || "").replace(/\D/g, "");
+        if (!id) return html("Error", "<h1>Falta el id del smartie</h1>", 400);
+        const token = await yiqiLogin(env);
+        const cand = ["MATERIAL", "ARTICULO", "PRECIO_ARTICULO", "PRECIO_ARTICULO_VENTA", "STOCK", "PRECIO_ARTICULO_COMP", "BOM"];
+        const { filas, columnas, entidad } = await leerSmartieDetectando(env, token, id, cand, 30);
+        const titulo = (k) => {
+          const col = columnas.find((c) => Object.values(c || {}).includes(k));
+          const t = col ? Object.values(col).find((v) => typeof v === "string" && v !== k) : null;
+          return t || k;
+        };
+        const claves = filas.length ? Object.keys(filas[0]) : [];
+        const q = (v) => '"' + String(v ?? "").replace(/"/g, '""') + '"';
+        const num = (v) => (typeof v === "number" ? String(v).replace(".", ",") : q(v));
+        const lineas = [claves.map((k) => q(titulo(k))).join(";"), ...filas.map((f) => claves.map((k) => num(f[k])).join(";"))];
+        return new Response("\ufeff" + lineas.join("\r\n"), {
+          headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="smartie_${id}_${entidad}.csv"`, "cache-control": "no-store" },
         });
       }
       if (url.pathname === "/probar-sku") return await paginaProbarSku(request, env);
