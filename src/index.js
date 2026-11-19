@@ -253,6 +253,65 @@ async function leerBom(env, token) {
   return { smartieId, entidad, total, filasLeidas: filas.length, columnasDetectadas: k, items: [...porSku.values()], avisos, muestraCruda: filas.slice(0, 2), columnas };
 }
 
+
+// ---------------------------------------------------------------- datos para la planilla de rentabilidad
+// Entidades donde puede estar un smartie de YiQi (se prueba en este orden).
+const ENTIDADES_SMARTIE = ["PRECIO_ARTICULO", "MATERIAL", "PRECIO_ARTICULO_POR_", "PUBLICACION", "ARTICULO", "PRECIO_ARTICULO_VENTA", "LISTA_DE_PRECIOS", "STOCK", "PRECIO_ARTICULO_COMP", "BOM"];
+// Máximo de páginas de YiQi por pedido (Cloudflare limita las consultas externas por pedido).
+const PAGINAS_POR_PEDIDO = 30;
+
+async function yiqiSmartieRango(env, token, smartieId, entidad, desde, cantidad) {
+  const filas = [];
+  let columnas = null, total = null, ultima = desde - 1, fin = false;
+  for (let page = desde; page < desde + cantidad; page++) {
+    const u = new URL(`${YIQI_BASE}/api/public/${entidad}/smartie`);
+    u.searchParams.set("smartieId", smartieId);
+    u.searchParams.set("schemaId", env.YIQI_SCHEMA_ID);
+    u.searchParams.set("page", String(page));
+    u.searchParams.set("pageSize", "500");
+    const r = await fetch(u, { headers: { authorization: `Bearer ${token}`, accept: "application/json" } });
+    const txt = await r.text();
+    if (!r.ok) throw new Error(`YiQi smartie ${smartieId} página ${page} (HTTP ${r.status}): ${txt.slice(0, 200)}`);
+    const j = JSON.parse(txt);
+    if (!columnas) columnas = j.columns || [];
+    if (total === null) total = j.total ?? null;
+    const data = j.data || [];
+    filas.push(...data);
+    ultima = page;
+    if (data.length < 500 || (total !== null && page * 500 >= total)) { fin = true; break; }
+  }
+  return { filas, columnas: columnas || [], total, ultima, fin };
+}
+
+// GET /api/smartie?id=1763&pagina=1  (encabezado X-Clave = secreto CLAVE_PLANILLA)
+// Devuelve las filas del smartie en JSON, de a PAGINAS_POR_PEDIDO páginas de YiQi.
+async function apiSmartie(request, env, url) {
+  const clave = String(env.CLAVE_PLANILLA || "").trim();
+  if (!clave) return Response.json({ error: "Falta el secreto CLAVE_PLANILLA en Cloudflare." }, { status: 503 });
+  if (!iguales(clave, String(request.headers.get("x-clave") || "").trim())) return Response.json({ error: "Clave incorrecta." }, { status: 401 });
+  const permitidos = String(env.SMARTIES_PLANILLA || "").split(",").map((x) => x.trim()).filter(Boolean);
+  const id = (url.searchParams.get("id") || "").replace(/\D/g, "");
+  if (!permitidos.includes(id)) return Response.json({ error: `El smartie ${id} no está habilitado (SMARTIES_PLANILLA).` }, { status: 400 });
+  const pagina = Math.max(1, parseInt(url.searchParams.get("pagina") || "1", 10) || 1);
+  const token = await yiqiLogin(env);
+  let entidad = (url.searchParams.get("entidad") || "").replace(/[^A-Z_]/g, "");
+  const candidatas = entidad ? [entidad] : ENTIDADES_SMARTIE;
+  const errores = [];
+  for (const e of candidatas) {
+    try {
+      const r = await yiqiSmartieRango(env, token, id, e, pagina, PAGINAS_POR_PEDIDO);
+      const columnas = r.columnas.map((c) => {
+        const vals = Object.values(c || {}).filter((v) => typeof v === "string");
+        const clave = vals.find((v) => r.filas.length && v in r.filas[0]) || vals[0] || null;
+        const titulo = vals.find((v) => v !== clave) || clave;
+        return { clave, titulo };
+      });
+      return Response.json({ smartie: id, entidad: e, total: r.total, columnas, filas: r.filas, siguiente: r.fin ? null : r.ultima + 1 });
+    } catch (err) { errores.push(`${e}: ${String(err.message).slice(0, 120)}`); }
+  }
+  return Response.json({ error: `No pude leer el smartie ${id}`, intentos: errores }, { status: 502 });
+}
+
 // ---------------------------------------------------------------- Zentor (MCP)
 
 let rpcId = 1;
@@ -499,6 +558,10 @@ async function paginaProbarSku(request, env) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname === "/api/smartie") {
+      try { return await apiSmartie(request, env, url); }
+      catch (e) { return Response.json({ error: e.message }, { status: 500 }); }
+    }
     if (!String(env.CLAVE_PANEL || "").trim())
       return html("Falta configurar", `<h1>Falta la clave del panel</h1><p>Cargá el secreto <code>CLAVE_PANEL</code> en Cloudflare (Settings → Variables and Secrets, tipo Secret) y volvé a entrar.</p>`, 503);
     if (url.pathname === "/entrar" && request.method === "POST") {
@@ -552,7 +615,7 @@ export default {
         const id = (url.searchParams.get("id") || "").replace(/\D/g, "");
         if (!id) return html("Error", "<h1>Falta el id del smartie</h1>", 400);
         const token = await yiqiLogin(env);
-        const cand = ["PRECIO_ARTICULO", "MATERIAL", "ARTICULO", "PRECIO_ARTICULO_VENTA", "LISTA_DE_PRECIOS", "STOCK", "PRECIO_ARTICULO_COMP", "BOM"];
+        const cand = ENTIDADES_SMARTIE;
         const { filas, columnas, entidad } = await leerSmartieDetectando(env, token, id, cand, 30);
         const titulo = (k) => {
           const col = columnas.find((c) => Object.values(c || {}).includes(k));
