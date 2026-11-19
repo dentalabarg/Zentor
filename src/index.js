@@ -256,7 +256,7 @@ async function leerBom(env, token) {
 
 // ---------------------------------------------------------------- datos para la planilla de rentabilidad
 // Entidades donde puede estar un smartie de YiQi (se prueba en este orden).
-const ENTIDADES_SMARTIE = ["PRECIO_ARTICULO", "MATERIAL", "PRECIO_ARTICULO_POR_", "PUBLICACION", "ARTICULO", "PRECIO_ARTICULO_VENTA", "LISTA_DE_PRECIOS", "STOCK", "PRECIO_ARTICULO_COMP", "BOM"];
+const ENTIDADES_SMARTIE = ["PRECIO_ARTICULO", "MATERIAL", "CONSULTA_DE_STOCK", "PRECIO_ARTICULO_POR_", "PUBLICACION", "ARTICULO", "PRECIO_ARTICULO_VENTA", "LISTA_DE_PRECIOS", "STOCK", "PRECIO_ARTICULO_COMP", "BOM"];
 // Máximo de páginas de YiQi por pedido (Cloudflare limita las consultas externas por pedido).
 const PAGINAS_POR_PEDIDO = 30;
 
