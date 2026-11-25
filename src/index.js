@@ -474,7 +474,7 @@ function paginaPanel(url, env) {
 <a class="btn" href="/probar-sku">3. Probar con un SKU</a>
 <a class="btn" href="/sincronizar">4. Sincronizar ahora</a>
 <a class="btn" href="/exportar-costos">5. Descargar costos (CSV)</a>
-<a class="btn" href="/exportar-smartie?id=1763">6. Descargar artículos 1763 (CSV)</a>\n<a class="btn" href="/exportar-smartie?id=2295">7. Descargar listas de precios 2295 (CSV)</a></div>`);
+<a class="btn" href="/exportar-smartie?id=1763">6. Descargar artículos 1763 (CSV)</a>\n<a class="btn" href="/exportar-smartie?id=1844">7. Descargar listas de precios 1844 (CSV)</a></div>`);
 }
 
 async function paginaDiagnostico(env) {
